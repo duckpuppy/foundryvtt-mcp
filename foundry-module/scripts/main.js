@@ -52,7 +52,7 @@ Hooks.once('ready', () => {
       throw new Error(`Unknown command: ${type}`);
     }
     return handler(params);
-  });
+  }, { userId: game.user.id, userName: game.user.name });
   transport.connect();
 
   // Pushed unsolicited (no outstanding request) so `watch_events` on the

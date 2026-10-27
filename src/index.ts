@@ -130,6 +130,13 @@ class FoundryMCPServer {
           ? { executablePath: config.headlessGm.executablePath }
           : {}),
       });
+      // Only the headless session's own module may be the bridge: a human
+      // GM's browser tab runs the module too, and would otherwise take the
+      // bridge over every few seconds, killing commands sent to it.
+      const bridgeUserName = headlessUsername;
+      this.moduleBridge.acceptUser = (userId) =>
+        this.foundryClient.getWorldData()?.users.find((u) => u._id === userId)?.name ===
+        bridgeUserName;
     } else {
       this.headlessGmSession = null;
       if (this.moduleBridge && config.headlessGm.enabled) {

@@ -9,15 +9,20 @@
 const WS_OPEN = 1;
 const DEFAULT_RECONNECT_INTERVAL_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 10;
+/** The server's close code for "not the bridge user" (src/foundry/module-bridge.ts). */
+const NOT_BRIDGE_USER_CLOSE_CODE = 4001;
 
 export class BridgeTransport {
   /**
    * @param {string} url
    * @param {(type: string, params: Record<string, unknown>) => Promise<unknown>} onCommand
+   * @param {Record<string, unknown>} hello  Sent first on every connection, so the
+   *   server can tell which user's client this is.
    */
-  constructor(url, onCommand) {
+  constructor(url, onCommand, hello = {}) {
     this.url = url;
     this.onCommand = onCommand;
+    this.hello = hello;
     /** @type {WebSocket | null} */
     this.socket = null;
     this.reconnectAttempts = 0;
@@ -35,8 +40,15 @@ export class BridgeTransport {
     socket.onopen = () => {
       this.reconnectAttempts = 0;
       console.log(`FoundryVTT MCP Bridge | connected to ${this.url}`);
+      socket.send(JSON.stringify({ event: 'hello', payload: this.hello }));
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      if (event.code === NOT_BRIDGE_USER_CLOSE_CODE) {
+        // The server serves another user's client (its own headless GM);
+        // retrying would only be refused again.
+        console.log('FoundryVTT MCP Bridge | another user is the bridge; not reconnecting');
+        return;
+      }
       console.log('FoundryVTT MCP Bridge | disconnected');
       if (!this.manualClose) this.scheduleReconnect();
     };

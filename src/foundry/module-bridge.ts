@@ -14,7 +14,11 @@
  * `WebSocketClient.ts` (MIT), which this mirrors from the server side.
  *
  * Exactly one module connection is supported at a time (the GM's client); a
- * new connection replaces the previous one.
+ * new connection replaces the previous one. When {@link ModuleBridge.acceptUser}
+ * is set (the server runs its own headless GM), a connection must first
+ * introduce itself with a `{event: "hello", payload: {userId}}` push and is
+ * only used if that user is accepted - so a human GM's own browser tab, which
+ * also runs the module, can't take the bridge away from the headless session.
  */
 
 import { WebSocket, WebSocketServer } from 'ws';
@@ -42,6 +46,9 @@ function isBridgeMessage(value: unknown): value is BridgeMessage {
   return typeof value === 'object' && value !== null;
 }
 
+/** WebSocket close code telling the module it isn't the bridge user, so it stops reconnecting. */
+export const NOT_BRIDGE_USER_CLOSE_CODE = 4001;
+
 export class ModuleBridge {
   private wss: WebSocketServer | null = null;
   private socket: WebSocket | null = null;
@@ -55,10 +62,17 @@ export class ModuleBridge {
    * `modifyDocument` Socket.IO channel. `null` when nobody is listening.
    */
   onEvent: ((type: string, payload: Record<string, unknown>) => void) | null = null;
+  /**
+   * Decides which Foundry user's module may serve as the bridge, from the
+   * userId in its hello. `null` (the default) accepts any connection at once.
+   */
+  acceptUser: ((userId: string) => boolean) | null = null;
+  private readonly helloTimeoutMs: number;
 
-  constructor(port: number, requestTimeoutMs = 15000) {
+  constructor(port: number, requestTimeoutMs = 15000, helloTimeoutMs = 5000) {
     this.port = port;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.helloTimeoutMs = helloTimeoutMs;
   }
 
   /** Starts the relay server and waits for it to be listening. */
@@ -74,22 +88,68 @@ export class ModuleBridge {
       wss.once('error', (err: Error) => reject(err));
 
       wss.on('connection', (ws) => {
-        logger.info('Foundry module connected to bridge');
-        // A new connection (e.g. the GM reloaded) replaces the previous one.
-        this.socket?.terminate();
-        this.socket = ws;
-
-        ws.on('message', (data) => this.handleMessage(data.toString()));
-        ws.on('close', () => {
-          logger.warn('Foundry module disconnected from bridge');
-          if (this.socket === ws) {
-            this.socket = null;
-          }
-        });
-        ws.on('error', (err) => {
-          logger.error('Module bridge socket error', { error: err.message });
-        });
+        if (this.acceptUser) {
+          this.awaitHello(ws);
+        } else {
+          this.adopt(ws);
+        }
       });
+    });
+  }
+
+  /**
+   * Waits for a new connection's hello and adopts it only if its user is
+   * accepted; anything else is closed with {@link NOT_BRIDGE_USER_CLOSE_CODE}.
+   */
+  private awaitHello(ws: WebSocket): void {
+    const reject = (reason: string) => {
+      logger.info(`Module bridge refused a connection: ${reason}`);
+      ws.close(NOT_BRIDGE_USER_CLOSE_CODE, 'Not the bridge user');
+    };
+    const timer = setTimeout(() => {
+      ws.off('message', onFirst);
+      reject('no hello received (is the companion module up to date?)');
+    }, this.helloTimeoutMs);
+    const onFirst = (data: unknown) => {
+      clearTimeout(timer);
+      let msg: BridgeMessage | undefined;
+      try {
+        const parsed: unknown = JSON.parse(String(data));
+        msg = isBridgeMessage(parsed) ? parsed : undefined;
+      } catch {
+        msg = undefined;
+      }
+      const userId =
+        msg?.event === 'hello' && isRecord(msg.payload) && typeof msg.payload.userId === 'string'
+          ? msg.payload.userId
+          : undefined;
+      if (!userId) {
+        reject('first message was not a hello');
+      } else if (!this.acceptUser?.(userId)) {
+        reject(`user ${userId} is not the bridge user`);
+      } else {
+        this.adopt(ws);
+      }
+    };
+    ws.once('message', onFirst);
+    ws.once('close', () => clearTimeout(timer));
+  }
+
+  /** Makes `ws` the module connection, replacing any previous one (e.g. the GM reloaded). */
+  private adopt(ws: WebSocket): void {
+    logger.info('Foundry module connected to bridge');
+    this.socket?.terminate();
+    this.socket = ws;
+
+    ws.on('message', (data) => this.handleMessage(data.toString()));
+    ws.on('close', () => {
+      logger.warn('Foundry module disconnected from bridge');
+      if (this.socket === ws) {
+        this.socket = null;
+      }
+    });
+    ws.on('error', (err) => {
+      logger.error('Module bridge socket error', { error: err.message });
     });
   }
 
@@ -154,6 +214,9 @@ export class ModuleBridge {
       return;
     }
     if (typeof parsed.id !== 'string') {
+      if (parsed.event === 'hello') {
+        return;
+      }
       if (typeof parsed.event === 'string') {
         this.onEvent?.(parsed.event, isRecord(parsed.payload) ? parsed.payload : {});
         return;
