@@ -641,8 +641,8 @@ export class FoundryClient {
       const timeout = setTimeout(() => {
         cleanup();
         this.socket?.disconnect();
-        reject(new Error('Timeout waiting for world data (15s)'));
-      }, 15000);
+        reject(new Error(`Timeout waiting for world data (${WORLD_LOAD_TIMEOUT_MS / 1000}s)`));
+      }, WORLD_LOAD_TIMEOUT_MS);
 
       const onSession = (data: { userId?: string } | null) => {
         if (!data?.userId) {
@@ -995,9 +995,10 @@ export class FoundryClient {
   /**
    * Re-emits 'world' on the existing socket to refresh the cached snapshot.
    *
-   * Registers a one-shot 'world' listener and cleans it up on every exit
-   * path (success, error, timeout) via `socket.off()` so that repeated
-   * refreshes over a long-running session do not leak listener handles.
+   * FoundryVTT answers the `world` request through the Socket.IO
+   * acknowledgement callback, exactly as in {@link connectAndLoadWorld}; it
+   * never sends a separate `world` event, so listening for one always timed
+   * out. An ack that arrives after the timeout is ignored.
    */
   async refreshWorldData(): Promise<void> {
     if (!this.socket?.connected) {
@@ -1005,33 +1006,26 @@ export class FoundryClient {
     }
 
     this.worldData = await new Promise<WorldData>((resolve, reject) => {
-      const cleanup = () => {
-        this.socket?.off('world', onWorld);
-      };
-
+      let settled = false;
       const timeoutId = setTimeout(() => {
-        cleanup();
+        settled = true;
         reject(new Error('Refresh timeout'));
-      }, this.config.timeout ?? 15000);
+      }, WORLD_LOAD_TIMEOUT_MS);
 
-      const onWorld = (data: WorldData) => {
-        cleanup();
-        clearTimeout(timeoutId);
-        try {
-          const parsed = WorldDataSchema.safeParse(data);
-          if (!parsed.success) {
-            logger.warn('WorldData refresh failed schema validation — proceeding with raw data', {
-              issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
-            });
-          }
-          resolve(data);
-        } catch (err) {
-          reject(err as Error);
+      this.socket?.emit('world', (data: WorldData) => {
+        if (settled) {
+          return;
         }
-      };
-
-      this.socket?.once('world', onWorld);
-      this.socket?.emit('world');
+        settled = true;
+        clearTimeout(timeoutId);
+        const parsed = WorldDataSchema.safeParse(data);
+        if (!parsed.success) {
+          logger.warn('WorldData refresh failed schema validation — proceeding with raw data', {
+            issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+          });
+        }
+        resolve(data);
+      });
     });
 
     this.worldDataStale = false;
@@ -5856,6 +5850,13 @@ function exhaustionMax(sys: Record<string, unknown> | undefined): number {
  * clear error on the first violation. Only checks rules for which the needed
  * limit (max HP, slot max, exhaustion bound) is available.
  */
+/**
+ * How long to wait for FoundryVTT's `world` payload. It is the whole world in
+ * one message: about 10 s for an imported adventure with ~850 actors, which
+ * the old 10-15 s limits cut off.
+ */
+const WORLD_LOAD_TIMEOUT_MS = 60_000;
+
 /** dnd5e's `staticID`: an id string cut or zero-padded to Foundry's 16 characters. */
 function dnd5eStaticId(id: string): string {
   return id.length >= 16 ? id.substring(0, 16) : id.padEnd(16, '0');
