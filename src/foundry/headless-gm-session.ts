@@ -115,7 +115,18 @@ export class HeadlessGmSession {
   async start(): Promise<void> {
     this.stopped = false;
     this.browser = await this.launchBrowser();
-    this.page = await this.browser.newPage();
+    // Foundry warns below 1366x768 and canvas work (capture_scene) misbehaves at the 1280x720 default
+    this.page = await this.browser.newPage({ viewport: { width: 1920, height: 1080 } });
+    // Surface the companion module's bridge messages, which only appear in the browser console
+    this.page.on('console', (msg) => {
+      const text = msg.text();
+      if (text.includes('MCP Bridge') || msg.type() === 'error' || msg.type() === 'warning') {
+        logger.info(`Headless GM console [${msg.type()}]: ${text.slice(0, 500)}`);
+      }
+    });
+    this.page.on('pageerror', (err) => {
+      logger.warn(`Headless GM page error: ${err.message.slice(0, 500)}`);
+    });
     this.page.on('framenavigated', (frame) => {
       if (frame !== this.page?.mainFrame()) {
         return;
@@ -213,7 +224,9 @@ export class HeadlessGmSession {
       });
 
       const selected = await this.page.evaluate((username: string) => {
-        const select = document.querySelector<HTMLSelectElement>('select[name="userId"], select[name="userid"]');
+        const select = document.querySelector<HTMLSelectElement>(
+          'select[name="userId"], select[name="userid"]',
+        );
         if (!select) {
           return false;
         }
