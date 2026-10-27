@@ -50,6 +50,7 @@ import { ACTIVE_EFFECT_MODES, OWNERSHIP_LEVELS, USER_ROLES, VISIBILITY_LEVELS } 
 import {
   applyDocumentBroadcast,
   applyUserActivity,
+  mergePatch,
   parseDocumentBroadcast,
   parseUserActivity,
 } from './world-cache.js';
@@ -1193,6 +1194,95 @@ export class FoundryClient {
   }
 
   /**
+   * The `system` data a token's actor actually has: the world actor's for a
+   * linked token, or the base actor's merged with the token's own delta for an
+   * unlinked one (each unlinked copy of a monster has its own HP).
+   *
+   * @returns undefined when the token or its actor isn't in the cache
+   */
+  getTokenActorSystem(tokenId: string, sceneId?: string): Record<string, unknown> | undefined {
+    const found = this.findToken(tokenId, sceneId);
+    if (!found) {
+      return undefined;
+    }
+    const { token } = found;
+    const actorId = typeof token.actorId === 'string' ? token.actorId : undefined;
+    const base = actorId ? systemOf(this.getRawActor(actorId)) : undefined;
+    if (token.actorLink === true) {
+      return base;
+    }
+    const merged: Record<string, unknown> = base ? structuredClone(base) : {};
+    const deltaSystem = isRecord(token.delta) ? token.delta.system : undefined;
+    if (isRecord(deltaSystem)) {
+      mergePatch(merged, structuredClone(deltaSystem));
+    }
+    return merged;
+  }
+
+  /**
+   * Patches attributes on one token's actor. WRITE — Socket.IO.
+   *
+   * A linked token shares its world actor, so this is {@link updateActorAttribute}.
+   * An unlinked token's changes go to its ActorDelta, the way FoundryVTT's own
+   * client sends them: an `ActorDelta` update parented to the token, with the
+   * delta's id and `syntheticActorUpdate: true`. The base actor, and every other
+   * token made from it, is untouched.
+   */
+  async updateTokenActorAttribute(
+    sceneId: string,
+    tokenId: string,
+    patch: AttributePatch,
+  ): Promise<ActorAttributeUpdateResult> {
+    this.assertWriteable();
+    if (!FOUNDRY_ID_PATTERN.test(sceneId)) {
+      throw new Error(`Invalid sceneId format: ${sceneId}`);
+    }
+    if (!FOUNDRY_ID_PATTERN.test(tokenId)) {
+      throw new Error(`Invalid tokenId format: ${tokenId}`);
+    }
+    if (!isRecord(patch) || Object.keys(patch).length === 0) {
+      throw new Error('patch is required and must contain at least one attribute path');
+    }
+    const found = this.findToken(tokenId, sceneId);
+    if (!found) {
+      throw new Error(`Token not found: ${tokenId} in scene ${sceneId}`);
+    }
+    const { token } = found;
+    const actorId = typeof token.actorId === 'string' ? token.actorId : undefined;
+    if (!actorId) {
+      throw new Error(`Token ${tokenId} has no actor`);
+    }
+    if (token.actorLink === true) {
+      return this.updateActorAttribute(actorId, patch);
+    }
+
+    const actor = await this.getActor(actorId);
+    validateAttributePatch(patch, actor, this.getTokenActorSystem(tokenId, sceneId));
+
+    const delta = token.delta;
+    const deltaId = isRecord(delta) && typeof delta._id === 'string' ? delta._id : tokenId;
+    const update: Record<string, unknown> = { _id: deltaId };
+    for (const [path, value] of Object.entries(patch)) {
+      update[`system.${path}`] = value;
+    }
+    await this.modifyDocument('ActorDelta', 'update', {
+      updates: [update],
+      parentUuid: `Scene.${sceneId}.Token.${tokenId}`,
+      syntheticActorUpdate: true,
+      diff: true,
+      recursive: true,
+    });
+
+    const after = this.getTokenActorSystem(tokenId, sceneId);
+    const updatedAttributes: Record<string, unknown> = {};
+    for (const [path, value] of Object.entries(patch)) {
+      const cached = after ? getDotPath(after, path) : undefined;
+      updatedAttributes[path] = cached !== undefined ? cached : value;
+    }
+    return { success: true, updatedAttributes };
+  }
+
+  /**
    * Creates a new top-level Actor document in the world.
    *
    * `Actor` is a top-level document (like `JournalEntry`), so the create
@@ -1759,6 +1849,12 @@ export class FoundryClient {
       });
     }
 
+    // Begin the encounter as Foundry's own "Begin Combat" does (Combat#startCombat);
+    // a combat left at round 0 hasn't started, and turn advances are meaningless.
+    await this.modifyDocument('Combat', 'update', {
+      updates: [{ _id: combatId, round: 1, turn: 0 }],
+    });
+
     return { combatId, combatantCount: combatants.length };
   }
 
@@ -1921,6 +2017,30 @@ export class FoundryClient {
   }
 
   /**
+   * Rewrites an unlinked token's synthetic-actor UUID to its ActorDelta UUID.
+   *
+   * FoundryVTT keeps an unlinked token's own items and effects on the token's
+   * ActorDelta, and its client sends embedded writes for a token actor with
+   * `parentUuid: "Scene.<sid>.Token.<tid>.ActorDelta.<did>"`
+   * (ClientDatabaseBackend#adjustActorDeltaRequest). v14 rejects the
+   * `...Token.<tid>.Actor.<aid>` form outright. The delta's id defaults to the
+   * token's id. Any other UUID is returned unchanged.
+   */
+  private toDeltaParentUuid(parentActorUuid: string): string {
+    const match =
+      /^Scene\.([a-zA-Z0-9]{16})\.Token\.([a-zA-Z0-9]{16})\.Actor\.[a-zA-Z0-9]{16}$/.exec(
+        parentActorUuid,
+      );
+    if (!match) {
+      return parentActorUuid;
+    }
+    const [, sceneId, tokenId] = match;
+    const delta = this.findToken(tokenId as string, sceneId)?.token.delta;
+    const deltaId = isRecord(delta) && typeof delta._id === 'string' ? delta._id : tokenId;
+    return `Scene.${sceneId}.Token.${tokenId}.ActorDelta.${deltaId}`;
+  }
+
+  /**
    * Creates a status-effect `ActiveEffect` on a token's actor (FR-019).
    *
    * `ActiveEffect` is an embedded document of `Actor`, so the create is sent with
@@ -1952,13 +2072,36 @@ export class FoundryClient {
     const effectData: Record<string, unknown> = {
       name: options.name ?? statusId,
       statuses: [statusId],
+      // ACTIVE_EFFECT_SHOW_ICON.ALWAYS, as ActiveEffect.fromStatusEffect sets.
+      // The default (CONDITIONAL) only draws the token icon for temporary
+      // effects, and since v14 a status alone no longer makes one temporary.
+      showIcon: 2,
     };
     if (options.img) {
       effectData.img = options.img;
     }
+    // dnd5e gives each condition a fixed effect id (staticID("dnd5e<status>")),
+    // and its sheet only shows a condition as on when an effect with that id
+    // exists - otherwise it lists a stray "passive effect". Use the same id,
+    // as Actor#toggleStatusEffect would, and ask Foundry to keep it.
+    const systemId = (this.worldData?.system as { id?: string } | undefined)?.id;
+    const staticId = systemId === 'dnd5e' ? dnd5eStaticId(`dnd5e${statusId}`) : undefined;
+    if (staticId) {
+      effectData._id = staticId;
+      if (!options.name) {
+        effectData.name = statusId.charAt(0).toUpperCase() + statusId.slice(1);
+      }
+      // The token draws its status icon from the effect's img. dnd5e names
+      // each icon after its status id in kebab case (coverHalf -> cover-half).
+      if (!options.img) {
+        const file = statusId.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+        effectData.img = `systems/dnd5e/icons/svg/statuses/${file}.svg`;
+      }
+    }
     const result = await this.modifyDocument('ActiveEffect', 'create', {
       data: [effectData],
-      parentUuid: parentActorUuid,
+      parentUuid: this.toDeltaParentUuid(parentActorUuid),
+      ...(staticId ? { keepId: true } : {}),
     });
     return result[0] as WorldEffect;
   }
@@ -1981,7 +2124,7 @@ export class FoundryClient {
     }
     await this.modifyDocument('ActiveEffect', 'delete', {
       ids: [effectId],
-      parentUuid: parentActorUuid,
+      parentUuid: this.toDeltaParentUuid(parentActorUuid),
     });
   }
 
@@ -2025,7 +2168,7 @@ export class FoundryClient {
     }
     const result = await this.modifyDocument('ActiveEffect', 'create', {
       data: [effectData],
-      parentUuid: parentActorUuid,
+      parentUuid: this.toDeltaParentUuid(parentActorUuid),
     });
     return result[0] as WorldEffect;
   }
@@ -2076,7 +2219,7 @@ export class FoundryClient {
     }
     const result = await this.modifyDocument('ActiveEffect', 'update', {
       updates: [update],
-      parentUuid: parentActorUuid,
+      parentUuid: this.toDeltaParentUuid(parentActorUuid),
     });
     return result[0] as WorldEffect;
   }
@@ -5713,6 +5856,11 @@ function exhaustionMax(sys: Record<string, unknown> | undefined): number {
  * clear error on the first violation. Only checks rules for which the needed
  * limit (max HP, slot max, exhaustion bound) is available.
  */
+/** dnd5e's `staticID`: an id string cut or zero-padded to Foundry's 16 characters. */
+function dnd5eStaticId(id: string): string {
+  return id.length >= 16 ? id.substring(0, 16) : id.padEnd(16, '0');
+}
+
 function validateAttributePatch(
   patch: AttributePatch,
   actor: FoundryActor,

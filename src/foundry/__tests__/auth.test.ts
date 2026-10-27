@@ -202,10 +202,12 @@ describe('authenticateFoundry — warn-and-continue (CN-7 analogue)', () => {
       'http://example.com/join',
       expect.objectContaining({
         action: 'join',
-        userid: 'abc123DEF456ghij',
+        userId: 'abc123DEF456ghij',
         password: 'pw',
       }),
-      expect.any(Object),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'Sec-Fetch-Site': 'same-origin' }),
+      }),
     );
   });
 
