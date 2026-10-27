@@ -185,6 +185,11 @@ export const actorMutationTools = [
           type: 'string',
           description: 'Optional Folder document id to file the actor under',
         },
+        flags: {
+          type: 'object',
+          description:
+            'Optional module flags for actor.flags, keyed by module id, e.g. {"ddbimporter": {"dndbeyond": {"url": "https://www.dndbeyond.com/characters/123", "characterId": "123"}}} to pre-link a DDB Importer character',
+        },
       },
       required: ['name', 'type'],
     },
