@@ -64,7 +64,7 @@ export class ModuleBridge {
   /** Starts the relay server and waits for it to be listening. */
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wss = new WebSocketServer({ port: this.port });
+      const wss = new WebSocketServer({ host: '127.0.0.1', port: this.port });
       this.wss = wss;
 
       wss.once('listening', () => {
