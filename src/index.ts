@@ -44,6 +44,27 @@ import { DiagnosticSystem } from './utils/diagnostics.js';
 import { logger } from './utils/logger.js';
 
 /**
+ * Tools that answer without the world snapshot (logs, health, dice, rules),
+ * so they run at once even while the first world load is still in flight.
+ */
+const WORLD_FREE_TOOLS = new Set([
+  'get_health_status',
+  'get_system_health',
+  'get_recent_logs',
+  'search_logs',
+  'diagnose_errors',
+  'roll_dice',
+  'lookup_rule',
+]);
+
+/**
+ * How long a tool call waits for the first world load. The load takes ~10 s
+ * for a large world; past this the call runs anyway and reports whatever
+ * "not connected" error applies.
+ */
+const WORLD_READY_WAIT_MS = 45_000;
+
+/**
  * Main FoundryVTT MCP Server class that handles all communication
  * between AI models and FoundryVTT instances.
  */
@@ -54,12 +75,20 @@ class FoundryMCPServer {
   private diagnosticSystem: DiagnosticSystem;
   private moduleBridge: ModuleBridge | null;
   private headlessGmSession: HeadlessGmSession | null;
+  /** Settles (never rejects) once the first FoundryVTT connect attempt finishes. */
+  private readonly worldReady: Promise<void>;
+  private markWorldReady: () => void = () => undefined;
 
   /**
    * Creates a new FoundryMCPServer instance.
    * Initializes the MCP server, FoundryVTT client, and sets up all handlers.
    */
   constructor() {
+    // Created before any handler is registered, so no tool call can arrive
+    // ahead of it; start() settles it after the first connect attempt.
+    this.worldReady = new Promise<void>((resolve) => {
+      this.markWorldReady = resolve;
+    });
     this.server = new Server(
       {
         name: config.serverName,
@@ -181,6 +210,12 @@ class FoundryMCPServer {
       const { name, arguments: args } = request.params;
       logger.info('Executing tool', { name, args });
 
+      // Calls that arrive right after start-up would otherwise see an empty
+      // world (e.g. "Token not found") until the first load lands.
+      if (!WORLD_FREE_TOOLS.has(name)) {
+        await waitAtMost(this.worldReady, WORLD_READY_WAIT_MS);
+      }
+
       try {
         return (await routeToolRequest(
           name,
@@ -249,7 +284,11 @@ class FoundryMCPServer {
 
     try {
       // Connect to FoundryVTT
-      await this.foundryClient.connect();
+      try {
+        await this.foundryClient.connect();
+      } finally {
+        this.markWorldReady();
+      }
       logger.info('Connected to FoundryVTT successfully');
 
       // The module bridge is optional, best-effort infrastructure for a
@@ -378,4 +417,17 @@ if (isMainModule) {
     logger.error('Server startup failed:', error);
     process.exit(1);
   });
+}
+
+/** Resolves when `promise` settles or after `ms`, whichever comes first. */
+async function waitAtMost(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
