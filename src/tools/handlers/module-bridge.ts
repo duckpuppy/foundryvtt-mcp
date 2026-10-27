@@ -8,6 +8,7 @@ import { extname } from 'node:path';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { FoundryClient } from '../../foundry/client.js';
 import type { ModuleBridge } from '../../foundry/module-bridge.js';
+import { isRecord } from '../../utils/guards.js';
 import { withToolError } from './utils.js';
 
 interface CaptureSceneResult {
@@ -420,6 +421,109 @@ function isGetTargetsResult(value: unknown): value is GetTargetsResult {
   return (
     typeof value === 'object' && value !== null && Array.isArray((value as GetTargetsResult).users)
   );
+}
+
+interface ActorStats {
+  actorId?: string;
+  sceneId?: string;
+  tokenId?: string;
+  name?: string;
+  type?: string;
+  level?: number | null;
+  hp?: { value: number | null; max: number | null; temp: number | null };
+  ac?: number | null;
+  init?: number | null;
+  passivePerception?: number | null;
+  spellDc?: number | null;
+  abilities?: Record<string, { value: number | null; mod: number | null; save: number | null }>;
+  error?: string;
+}
+
+function isActorStatsResult(value: unknown): value is { actors: ActorStats[] } {
+  return isRecord(value) && Array.isArray(value.actors);
+}
+
+const ID = /^[a-zA-Z0-9]{16}$/;
+const signed = (n: number | null | undefined) =>
+  n === null || n === undefined ? '?' : n >= 0 ? `+${n}` : String(n);
+const plain = (n: number | null | undefined) => (n === null || n === undefined ? '?' : String(n));
+
+/** One markdown line per actor: HP, AC, init, level, passive Perception, spell DC, abilities. */
+function formatActorStats(a: ActorStats): string {
+  const ref = a.tokenId ? `token ${a.tokenId}` : `actor ${a.actorId}`;
+  if (a.error) {
+    return `- ❌ ${ref}: ${a.error}`;
+  }
+  const hp = a.hp
+    ? `${plain(a.hp.value)}/${plain(a.hp.max)}${a.hp.temp ? ` (+${a.hp.temp} temp)` : ''}`
+    : '?';
+  const abilities = Object.entries(a.abilities ?? {})
+    .map(
+      ([k, v]) => `${k.toUpperCase()} ${plain(v.value)} (${signed(v.mod)}, save ${signed(v.save)})`,
+    )
+    .join(', ');
+  const extras = [
+    a.passivePerception !== null && a.passivePerception !== undefined
+      ? `passive Perception ${a.passivePerception}`
+      : '',
+    a.spellDc ? `spell DC ${a.spellDc}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+  return `- **${a.name}** (${ref}, ${a.type}, level ${plain(a.level)}): HP ${hp}, AC ${plain(a.ac)}, init ${signed(a.init)}${extras ? `, ${extras}` : ''}\n  ${abilities}`;
+}
+
+export async function handleGetActorStats(
+  args: Record<string, unknown>,
+  moduleBridge: ModuleBridge | null,
+) {
+  if (!moduleBridge) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      'The module bridge is disabled. Set FOUNDRY_MODULE_BRIDGE_ENABLED=true and install the companion Foundry module.',
+    );
+  }
+  const actorIds = Array.isArray(args.actorIds) ? args.actorIds : [];
+  const tokens = Array.isArray(args.tokens) ? args.tokens : [];
+  if (actorIds.length === 0 && tokens.length === 0) {
+    throw new McpError(ErrorCode.InvalidParams, 'Give actorIds and/or tokens to read');
+  }
+  if (!actorIds.every((id) => typeof id === 'string' && ID.test(id))) {
+    throw new McpError(ErrorCode.InvalidParams, 'actorIds must be 16-character Foundry ids');
+  }
+  if (
+    !tokens.every(
+      (t) =>
+        isRecord(t) &&
+        typeof t.sceneId === 'string' &&
+        ID.test(t.sceneId) &&
+        typeof t.tokenId === 'string' &&
+        ID.test(t.tokenId),
+    )
+  ) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'tokens must be {sceneId, tokenId} pairs of 16-character Foundry ids',
+    );
+  }
+
+  return withToolError('get actor stats', async () => {
+    const result = await moduleBridge.send('get_actor_stats', { actorIds, tokens });
+    if (!isActorStatsResult(result)) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        'Module returned an unexpected get_actor_stats shape (is the companion module 0.6.0 or later?)',
+      );
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `📊 **Actor Stats** (as the sheet shows them)\n${result.actors.map(formatActorStats).join('\n')}`,
+        },
+      ],
+    };
+  });
 }
 
 export async function handleGetTargets(

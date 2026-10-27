@@ -2729,6 +2729,30 @@ export const moduleBridgeTools = [
     },
   },
   {
+    name: 'get_actor_stats',
+    description:
+      "Read actors' prepared stats - the numbers the actor sheet shows, including values the game system derives at load time and never stores (dnd5e: max HP, AC, initiative bonus, ability modifiers and saves, level or CR, passive Perception, spell save DC). The cached world snapshot only has stored data, so for player characters get_actor_details shows these as Unknown. Accepts world actor ids and/or unlinked tokens (each with its own HP). Requires the companion Foundry module. Use when: you need a character's or monster's real max HP or AC, e.g. to set up a combat tracker.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        actorIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'World actor ids',
+        },
+        tokens: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { sceneId: { type: 'string' }, tokenId: { type: 'string' } },
+            required: ['sceneId', 'tokenId'],
+          },
+          description: "Tokens whose own actor to read (an unlinked token's HP is its own)",
+        },
+      },
+    },
+  },
+  {
     name: 'get_targets',
     description:
       'List the current target selections of all connected users on the active canvas. Returns each user with the tokens they currently have targeted. Requires the companion Foundry module. Use when: checking who players are aiming at or focusing on.',
