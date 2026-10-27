@@ -163,12 +163,15 @@ export async function authenticateFoundry(
     `${baseUrl}/join`,
     {
       action: 'join',
-      userid: userId,
+      // v14 renamed the field from `userid` to `userId`
+      userId,
       password,
     },
     {
       headers: {
         'Content-Type': 'application/json',
+        // v14 rejects the join POST (400) unless it looks like a same-origin fetch
+        'Sec-Fetch-Site': 'same-origin',
         Cookie: `session=${session}`,
       },
       // Accept 200 (success JSON), 302 (redirect to /game on success) and 401

@@ -208,12 +208,12 @@ export class HeadlessGmSession {
     try {
       const joinUrl = new URL('/join', this.options.foundryUrl).toString();
       await this.page.goto(joinUrl, { waitUntil: 'domcontentloaded' });
-      await this.page.waitForSelector('select[name="userid"]', {
+      await this.page.waitForSelector('select[name="userId"], select[name="userid"]', {
         timeout: JOIN_SELECTOR_TIMEOUT_MS,
       });
 
       const selected = await this.page.evaluate((username: string) => {
-        const select = document.querySelector<HTMLSelectElement>('select[name="userid"]');
+        const select = document.querySelector<HTMLSelectElement>('select[name="userId"], select[name="userid"]');
         if (!select) {
           return false;
         }
