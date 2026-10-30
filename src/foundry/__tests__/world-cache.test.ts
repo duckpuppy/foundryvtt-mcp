@@ -14,6 +14,7 @@ const JOURNAL_ID = 'cccccccccccccccc';
 const SCENE_ID = 'dddddddddddddddd';
 const TOKEN_ID = 'eeeeeeeeeeeeeeee';
 const COMBAT_ID = 'ffffffffffffffff';
+const PAGE_ID = 'gggggggggggggggg';
 
 /** Minimal WorldData with just the collections the tests touch. */
 const buildWorldData = (): WorldData =>
@@ -279,6 +280,40 @@ describe('applyDocumentBroadcast — embedded documents', () => {
     });
     expect(applied).toBe(true);
     expect(world.actors[0].effects).toHaveLength(1);
+  });
+
+  it("applies a page update to the parent journal entry's pages", () => {
+    const world = buildWorldData();
+    world.journal.push({
+      _id: JOURNAL_ID,
+      name: 'Session 11 Recap',
+      pages: [
+        { _id: PAGE_ID, name: 'Summary', type: 'text', text: { content: '<p>a</p>', format: 1 } },
+      ],
+    });
+    const applied = applyDocumentBroadcast(world, {
+      type: 'JournalEntryPage',
+      action: 'update',
+      result: [{ _id: PAGE_ID, 'text.content': '<p>b</p>' }],
+      parentUuid: `JournalEntry.${JOURNAL_ID}`,
+    });
+    expect(applied).toBe(true);
+    expect(world.journal[0].pages?.[0]).toMatchObject({
+      name: 'Summary',
+      text: { content: '<p>b</p>', format: 1 },
+    });
+  });
+
+  it('adds a created page to its parent journal entry', () => {
+    const world = buildWorldData();
+    world.journal.push({ _id: JOURNAL_ID, name: 'Session 11 Recap', pages: [] });
+    applyDocumentBroadcast(world, {
+      type: 'JournalEntryPage',
+      action: 'create',
+      result: [{ _id: PAGE_ID, name: 'Loot', type: 'text' }],
+      parentUuid: `JournalEntry.${JOURNAL_ID}`,
+    });
+    expect(world.journal[0].pages).toHaveLength(1);
   });
 
   it("applies a token move to the parent scene's tokens", () => {

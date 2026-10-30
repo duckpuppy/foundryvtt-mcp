@@ -45,7 +45,10 @@ export async function handleSearchJournals(
   });
 }
 
-export async function handleGetJournal(args: { journalId: string }, foundryClient: FoundryClient) {
+export async function handleGetJournal(
+  args: { journalId: string; raw?: boolean },
+  foundryClient: FoundryClient,
+) {
   return withToolError('get journal', async () => {
     const journal = foundryClient.getJournal(args.journalId);
 
@@ -56,10 +59,16 @@ export async function handleGetJournal(args: { journalId: string }, foundryClien
     const pages =
       journal.pages
         ?.map((p) => {
+          const heading = `### ${p.name} — ID: ${p._id}`;
+          // raw returns the stored HTML untouched so a caller can rewrite the
+          // page with update_journal_page without losing markup or text.
+          if (args.raw === true) {
+            return `${heading}\n${p.text?.content ?? ''}`;
+          }
           const content = stripHtml(p.text?.content || '')
             .trim()
             .slice(0, 500);
-          return `### ${p.name}\n${content}${content.length >= 500 ? '...' : ''}`;
+          return `${heading}\n${content}${content.length >= 500 ? '...' : ''}`;
         })
         .join('\n\n') || 'No pages.';
 

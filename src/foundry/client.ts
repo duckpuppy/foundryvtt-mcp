@@ -35,13 +35,16 @@ import type {
   FoundryScene,
   FoundryWorld,
   ItemSearchResult,
+  JournalEntryUpdate,
   JournalPageCreateSource,
+  JournalPageUpdate,
   WorldActor,
   WorldCombat,
   WorldData,
   WorldEffect,
   WorldItem,
   WorldJournal,
+  WorldJournalPage,
   WorldMessage,
   WorldScene,
   WorldUser,
@@ -2342,6 +2345,193 @@ export class FoundryClient {
 
     const result = await this.modifyDocument('JournalEntry', 'create', {
       data: [data],
+    });
+    return result[0] as WorldJournal;
+  }
+
+  /**
+   * Renames a journal page and/or replaces its body.
+   *
+   * `JournalEntryPage` is embedded in a `JournalEntry`, so the update carries
+   * `parentUuid: "JournalEntry.<journalId>"` (mirrors {@link updateActorItem}).
+   * `content` replaces `text.content` wholesale — read the page with
+   * get_journal `raw: true` first when only part of it should change.
+   *
+   * @param journalId - 16-char alphanumeric JournalEntry document id
+   * @param pageId - 16-char alphanumeric JournalEntryPage document id
+   * @param patch - new name and/or HTML content; at least one required
+   * @returns the updated page data
+   */
+  async updateJournalPage(
+    journalId: string,
+    pageId: string,
+    patch: JournalPageUpdate,
+  ): Promise<WorldJournalPage> {
+    this.assertWriteable();
+    if (!FOUNDRY_ID_PATTERN.test(journalId)) {
+      throw new Error(`Invalid journalId format: ${journalId}`);
+    }
+    if (!FOUNDRY_ID_PATTERN.test(pageId)) {
+      throw new Error(`Invalid pageId format: ${pageId}`);
+    }
+    if (patch.name === undefined && patch.content === undefined) {
+      throw new Error('updateJournalPage requires a name or content to change');
+    }
+    if (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name)) {
+      throw new Error('name must be a non-empty string');
+    }
+    if (patch.content !== undefined && typeof patch.content !== 'string') {
+      throw new Error('content must be a string');
+    }
+
+    const update: Record<string, unknown> = { _id: pageId };
+    if (patch.name !== undefined) {
+      update.name = patch.name;
+    }
+    if (patch.content !== undefined) {
+      update['text.content'] = patch.content;
+    }
+    const result = await this.modifyDocument('JournalEntryPage', 'update', {
+      updates: [update],
+      parentUuid: `JournalEntry.${journalId}`,
+      diff: true,
+    });
+    return result[0] as WorldJournalPage;
+  }
+
+  /**
+   * Appends HTML to the end of a journal page's body.
+   *
+   * The current body is read from the cached worldData (kept live by the
+   * `modifyDocument` broadcast, see world-cache.ts), so the page must already
+   * be known locally — a missing journal or page fails here rather than
+   * overwriting the body with just the appended fragment.
+   *
+   * @param journalId - 16-char alphanumeric JournalEntry document id
+   * @param pageId - 16-char alphanumeric JournalEntryPage document id
+   * @param html - HTML fragment to add after the existing content
+   * @returns the updated page data
+   */
+  async appendJournalPage(
+    journalId: string,
+    pageId: string,
+    html: string,
+  ): Promise<WorldJournalPage> {
+    this.assertWriteable();
+    if (!FOUNDRY_ID_PATTERN.test(journalId)) {
+      throw new Error(`Invalid journalId format: ${journalId}`);
+    }
+    if (!FOUNDRY_ID_PATTERN.test(pageId)) {
+      throw new Error(`Invalid pageId format: ${pageId}`);
+    }
+    if (!html || typeof html !== 'string') {
+      throw new Error('html is required and must be a non-empty string');
+    }
+    const journal = this.getJournal(journalId);
+    if (!journal) {
+      throw new Error(`Journal not found: ${journalId}`);
+    }
+    const page = journal.pages?.find((p) => p._id === pageId);
+    if (!page) {
+      throw new Error(`Journal page not found: ${pageId} in journal ${journalId}`);
+    }
+    return this.updateJournalPage(journalId, pageId, {
+      content: `${page.text?.content ?? ''}${html}`,
+    });
+  }
+
+  /**
+   * Adds a text page to an existing journal entry, after its last page.
+   *
+   * Uses the same text-page shape as {@link createJournalEntry}. The `sort`
+   * is one {@link SORT_INTEGER_DENSITY} step past the highest cached page sort,
+   * so the entry's pages are read from worldData and must be known locally.
+   *
+   * @param journalId - 16-char alphanumeric JournalEntry document id
+   * @param page - page title and HTML content
+   * @returns the newly created page document
+   */
+  async addJournalPage(
+    journalId: string,
+    page: JournalPageCreateSource,
+  ): Promise<WorldJournalPage> {
+    this.assertWriteable();
+    if (!FOUNDRY_ID_PATTERN.test(journalId)) {
+      throw new Error(`Invalid journalId format: ${journalId}`);
+    }
+    if (!page?.name || typeof page.name !== 'string') {
+      throw new Error('name is required and must be a string');
+    }
+    if (typeof page.content !== 'string') {
+      throw new Error('content is required and must be a string');
+    }
+    const journal = this.getJournal(journalId);
+    if (!journal) {
+      throw new Error(`Journal not found: ${journalId}`);
+    }
+
+    const lastSort = Math.max(0, ...(journal.pages ?? []).map((p) => p.sort ?? 0));
+    const result = await this.modifyDocument('JournalEntryPage', 'create', {
+      data: [
+        {
+          name: page.name,
+          type: 'text',
+          text: { content: page.content, format: 1 },
+          sort: lastSort + SORT_INTEGER_DENSITY,
+        },
+      ],
+      parentUuid: `JournalEntry.${journalId}`,
+    });
+    return result[0] as WorldJournalPage;
+  }
+
+  /**
+   * Renames, refiles, and/or changes the visibility of a journal entry.
+   *
+   * `JournalEntry` is top-level, so the update carries no `parentUuid`.
+   * `visibility` sets only `ownership.default` (via {@link VISIBILITY_LEVELS},
+   * as in {@link createJournalEntry}); the recursive merge keeps any per-user
+   * ownership entries already on the document.
+   *
+   * @param journalId - 16-char alphanumeric JournalEntry document id
+   * @param patch - new name, folder id and/or visibility; at least one required
+   * @returns the updated journal entry data
+   */
+  async updateJournalEntry(journalId: string, patch: JournalEntryUpdate): Promise<WorldJournal> {
+    this.assertWriteable();
+    if (!FOUNDRY_ID_PATTERN.test(journalId)) {
+      throw new Error(`Invalid journalId format: ${journalId}`);
+    }
+    const { name, folder, visibility } = patch;
+    if (name === undefined && folder === undefined && visibility === undefined) {
+      throw new Error('updateJournalEntry requires a name, folder or visibility to change');
+    }
+    if (name !== undefined && (typeof name !== 'string' || !name)) {
+      throw new Error('name must be a non-empty string');
+    }
+    if (folder !== undefined && !FOUNDRY_ID_PATTERN.test(folder)) {
+      throw new Error(`Invalid folder format: ${folder}`);
+    }
+    if (visibility !== undefined && !(visibility in VISIBILITY_LEVELS)) {
+      throw new Error(
+        `Invalid visibility: ${visibility}. Expected one of: ${Object.keys(VISIBILITY_LEVELS).join(', ')}`,
+      );
+    }
+
+    const update: Record<string, unknown> = { _id: journalId };
+    if (name !== undefined) {
+      update.name = name;
+    }
+    if (folder !== undefined) {
+      update.folder = folder;
+    }
+    if (visibility !== undefined) {
+      update.ownership = { default: VISIBILITY_LEVELS[visibility] };
+    }
+    const result = await this.modifyDocument('JournalEntry', 'update', {
+      updates: [update],
+      diff: true,
+      recursive: true,
     });
     return result[0] as WorldJournal;
   }

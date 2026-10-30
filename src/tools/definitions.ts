@@ -2059,13 +2059,19 @@ export const journalTools = [
   {
     name: 'get_journal',
     description:
-      'Get one journal entry by id with the text of its pages. Page bodies are HTML-stripped and each is truncated to its first 500 characters, marked with a trailing "...", so long pages come back partial. Use when: you have a journalId and need the text of its pages. Do not use when: you only have a title or keyword - run search_journals first.',
+      'Get one journal entry by id with the id and text of each page. By default page bodies are HTML-stripped and each is truncated to its first 500 characters, marked with a trailing "...", so long pages come back partial; pass raw: true for the full, unmodified HTML. Use when: you have a journalId and need the text of its pages, or a pageId and the exact current HTML before editing a page with update_journal_page. Do not use when: you only have a title or keyword - run search_journals first.',
     inputSchema: {
       type: 'object',
       properties: {
         journalId: {
           type: 'string',
           description: 'The ID of the journal entry to retrieve',
+        },
+        raw: {
+          type: 'boolean',
+          description:
+            "Return each page's full, unmodified HTML (text.content) instead of the stripped 500-character preview. Use before rewriting a page so no markup or text is lost.",
+          default: false,
         },
       },
       required: ['journalId'],
@@ -2123,9 +2129,99 @@ export const journalMutationTools = [
     },
   },
   {
+    name: 'update_journal_page',
+    description:
+      'Edit one page of an existing journal entry. mode "replace" (default) sets a new name and/or replaces the whole page content; mode "append" adds HTML to the end of the current content. Get the pageId (and, before a replace, the exact current HTML) from get_journal with raw: true. Use when: correcting, rewriting, or extending session notes, lore, or a handout page. Do not use when: adding a separate new page - use add_journal_page; renaming or moving the entry itself - use update_journal_entry. ' +
+      WRITE_GATE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        journalId: {
+          type: 'string',
+          description: 'The ID of the journal entry that holds the page',
+        },
+        pageId: {
+          type: 'string',
+          description: 'The ID of the page to edit (shown by get_journal)',
+        },
+        mode: {
+          type: 'string',
+          enum: ['replace', 'append'],
+          description:
+            "'replace' (default) overwrites the page content with content and/or renames it; 'append' adds content after the existing content (name not allowed).",
+          default: 'replace',
+        },
+        name: {
+          type: 'string',
+          description: 'New page title (replace mode only)',
+        },
+        content: {
+          type: 'string',
+          description:
+            'Page body as HTML or plain text. In replace mode it replaces the entire page content; in append mode it is added at the end.',
+        },
+      },
+      required: ['journalId', 'pageId'],
+    },
+  },
+  {
+    name: 'add_journal_page',
+    description:
+      'Add a new text page to an existing journal entry, placed after its last page. Use when: a journal needs another section (a new session, an NPC, a location). Do not use when: the entry does not exist yet - use create_journal_entry; changing an existing page - use update_journal_page. ' +
+      WRITE_GATE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        journalId: {
+          type: 'string',
+          description: 'The ID of the journal entry to add the page to',
+        },
+        name: {
+          type: 'string',
+          description: 'Page title',
+        },
+        content: {
+          type: 'string',
+          description: 'Page body as HTML or plain text',
+        },
+      },
+      required: ['journalId', 'name', 'content'],
+    },
+  },
+  {
+    name: 'update_journal_entry',
+    description:
+      'Rename a journal entry, move it into another folder, or change who can see it. Only the fields supplied change. Use when: retitling notes, filing them under a folder, or revealing a handout to players. Do not use when: changing page text - use update_journal_page; granting a specific user access - use set_document_ownership. ' +
+      WRITE_GATE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        journalId: {
+          type: 'string',
+          description: 'The ID of the journal entry to update',
+        },
+        name: {
+          type: 'string',
+          description: 'New title of the journal entry',
+        },
+        folder: {
+          type: 'string',
+          description: 'Folder document id to move the entry into',
+        },
+        visibility: {
+          type: 'string',
+          enum: ['gm-only', 'observer', 'owner'],
+          description:
+            "Who can see the entry. 'gm-only' hides it from players; 'observer' lets every player read it; 'owner' lets every player read and edit it. Per-user ownership is kept.",
+        },
+      },
+      required: ['journalId'],
+    },
+  },
+  {
     name: 'delete_journal_entry',
     description:
-      'Permanently delete a journal entry. Use when: the user explicitly asks to remove outdated notes or a handout. Do not use when: only the content needs to change - no update tool exists for journal pages; create a replacement with create_journal_entry instead. ' +
+      'Permanently delete a journal entry. Use when: the user explicitly asks to remove outdated notes or a handout. Do not use when: only the content, title, folder or visibility needs to change - use update_journal_page, add_journal_page or update_journal_entry instead. ' +
       CONFIRM_FIRST +
       ' ' +
       WRITE_GATE,

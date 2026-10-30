@@ -71,6 +71,7 @@ const EMBEDDED_COLLECTIONS: Record<string, Record<string, string>> = {
   },
   Combat: { Combatant: 'combatants' },
   Item: { ActiveEffect: 'effects' },
+  JournalEntry: { JournalEntryPage: 'pages' },
   Playlist: { PlaylistSound: 'sounds' },
   RollTable: { TableResult: 'results' },
 };

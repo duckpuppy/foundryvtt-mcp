@@ -63,8 +63,12 @@ import {
 } from './handlers/item-mutations.js';
 import { handleSearchItems } from './handlers/items.js';
 import {
+  handleAddJournalPage,
   handleCreateJournalEntry,
   handleDeleteJournalEntry,
+  handleUpdateJournalEntry,
+  handleUpdateJournalPage,
+  type JournalPageUpdateMode,
 } from './handlers/journal-mutations.js';
 import { handleGetJournal, handleSearchJournals } from './handlers/journals.js';
 import {
@@ -846,7 +850,10 @@ export async function routeToolRequest(
       if (!('journalId' in args) || typeof args.journalId !== 'string') {
         throw new Error('Missing required parameter: journalId');
       }
-      return handleGetJournal(args as { journalId: string }, foundryClient);
+      if ('raw' in args && args.raw !== undefined && typeof args.raw !== 'boolean') {
+        throw new Error('Invalid parameter: raw must be a boolean');
+      }
+      return handleGetJournal(args as { journalId: string; raw?: boolean }, foundryClient);
 
     // Journal mutation tools (WRITE) — Socket.IO modifyDocument protocol
     // (foundryClient); require FOUNDRY_WRITE_ENABLED=true + a GM user.
@@ -861,6 +868,50 @@ export async function routeToolRequest(
         args as {
           name: string;
           pages: JournalPageCreateSource[];
+          folder?: string;
+          visibility?: DocumentVisibility;
+        },
+        foundryClient,
+      );
+    case 'update_journal_page':
+      if (!('journalId' in args) || typeof args.journalId !== 'string') {
+        throw new Error('Missing required parameter: journalId');
+      }
+      if (!('pageId' in args) || typeof args.pageId !== 'string') {
+        throw new Error('Missing required parameter: pageId');
+      }
+      return handleUpdateJournalPage(
+        args as {
+          journalId: string;
+          pageId: string;
+          mode?: JournalPageUpdateMode;
+          name?: string;
+          content?: string;
+        },
+        foundryClient,
+      );
+    case 'add_journal_page':
+      if (!('journalId' in args) || typeof args.journalId !== 'string') {
+        throw new Error('Missing required parameter: journalId');
+      }
+      if (!('name' in args) || typeof args.name !== 'string') {
+        throw new Error('Missing required parameter: name');
+      }
+      if (!('content' in args) || typeof args.content !== 'string') {
+        throw new Error('Missing required parameter: content');
+      }
+      return handleAddJournalPage(
+        args as { journalId: string; name: string; content: string },
+        foundryClient,
+      );
+    case 'update_journal_entry':
+      if (!('journalId' in args) || typeof args.journalId !== 'string') {
+        throw new Error('Missing required parameter: journalId');
+      }
+      return handleUpdateJournalEntry(
+        args as {
+          journalId: string;
+          name?: string;
           folder?: string;
           visibility?: DocumentVisibility;
         },
