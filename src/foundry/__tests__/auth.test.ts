@@ -256,6 +256,59 @@ describe('authenticateFoundry — session cookie on the Socket.IO handshake (#20
   });
 });
 
+describe('authenticateFoundry — POST /join compatibility with FoundryVTT v14', () => {
+  /**
+   * FoundryVTT v14 answers a POST /join without an Origin header with HTTP 400,
+   * so the request must carry the server's own origin as a browser would. It
+   * also reads the user id from `userId` (camelCase) instead of v13's `userid`,
+   * answering JOIN.ErrorUserDoesNotExist otherwise — so both keys are sent.
+   */
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockJoinCookieResponse();
+    mockJoinPostSuccess();
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('sends the server origin (scheme + host + port) as the Origin header', async () => {
+    await authenticateFoundry('http://localhost:30000', 'abc123DEF456ghij', 'pw');
+
+    expect(mockAxios.post).toHaveBeenCalledWith(
+      'http://localhost:30000/join',
+      expect.any(Object),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Origin: 'http://localhost:30000' }),
+      }),
+    );
+  });
+
+  it('sends the user id as both userid (v13) and userId (v14) in the body', async () => {
+    await authenticateFoundry('http://localhost:30000', 'abc123DEF456ghij', 'pw');
+
+    expect(mockAxios.post).toHaveBeenCalledWith(
+      'http://localhost:30000/join',
+      expect.objectContaining({ userid: 'abc123DEF456ghij', userId: 'abc123DEF456ghij' }),
+      expect.any(Object),
+    );
+  });
+
+  it('drops any path prefix from the base URL when building the Origin', async () => {
+    await authenticateFoundry('https://example.com/foundry', 'abc123DEF456ghij', 'pw');
+
+    expect(mockAxios.post).toHaveBeenCalledWith(
+      'https://example.com/foundry/join',
+      expect.any(Object),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Origin: 'https://example.com' }),
+      }),
+    );
+  });
+});
+
 describe('sessionSocketOptions (#206)', () => {
   it('carries the session in both the Cookie header and the query param', () => {
     expect(sessionSocketOptions('abc123')).toEqual({

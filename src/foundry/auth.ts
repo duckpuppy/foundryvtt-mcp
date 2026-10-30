@@ -163,13 +163,17 @@ export async function authenticateFoundry(
     `${baseUrl}/join`,
     {
       action: 'join',
-      userid: userId,
+      userid: userId, // Foundry v13
+      userId, // Foundry v14 reads camelCase
       password,
     },
     {
       headers: {
         'Content-Type': 'application/json',
         Cookie: `session=${session}`,
+        // FoundryVTT v14 rejects POST /join without an Origin header (HTTP 400),
+        // so send the server's own origin as a browser would.
+        Origin: new URL(baseUrl).origin,
       },
       // Accept 200 (success JSON), 302 (redirect to /game on success) and 401
       // (bad password). 401 carries FoundryVTT's own explanation in the body;
