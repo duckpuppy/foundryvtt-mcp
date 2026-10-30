@@ -250,7 +250,8 @@ Add to `~/.omp/agent/mcp.json` (or `~/.omp/mcp.json`):
 - `get_world_setting` / `set_world_setting` — inspect and modify system/module settings with core protection.
 - `set_document_ownership` — configure granular document permissions (`none`, `limited`, `observer`, `owner`).
 - `get_users` / `set_user_role` — list connected users and change permission roles with self-demotion lockout guards.
-- `create_journal_entry` / `get_journal` / `search_journals` / `delete_journal_entry` — manage session notes and lore.
+- `create_journal_entry` / `get_journal` / `search_journals` / `delete_journal_entry` — manage session notes and lore. `get_journal` lists each page's id; pass `raw: true` for the full, unmodified page HTML.
+- `update_journal_page` / `add_journal_page` / `update_journal_entry` — edit existing journals: replace or append to a page's content (or rename it), add a page after the last one, and rename, refile, or change the visibility of an entry.
 
 ### 7. Scene, Weather & Exploration
 - `create_scene` / `delete_scene` / `get_scene_info` / `switch_scene` — scene creation and player activation.

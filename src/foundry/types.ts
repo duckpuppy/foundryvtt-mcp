@@ -618,6 +618,21 @@ export interface JournalPageCreateSource {
   content: string;
 }
 
+/** Fields of an existing journal page that update_journal_page can change. */
+export interface JournalPageUpdate {
+  name?: string;
+  /** Replacement page body (HTML), stored as the page's `text.content`. */
+  content?: string;
+}
+
+/** Fields of an existing journal entry that update_journal_entry can change. */
+export interface JournalEntryUpdate {
+  name?: string;
+  /** 16-char Folder document id to move the entry into. */
+  folder?: string;
+  visibility?: DocumentVisibility;
+}
+
 /**
  * Default visibility for a newly created document (#204).
  *
@@ -919,6 +934,9 @@ export interface WorldJournal {
   ownership?: Record<string, number>;
   flags?: Record<string, unknown>;
 }
+
+/** One embedded `JournalEntryPage` of a {@link WorldJournal}. */
+export type WorldJournalPage = NonNullable<WorldJournal['pages']>[number];
 
 /**
  * Raw chat message from worldData.

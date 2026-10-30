@@ -126,6 +126,16 @@ describe('handleGetJournal', () => {
       expect(client.getJournal).toHaveBeenCalledWith('jrnl-1');
     });
 
+    it("shows each page's id next to its name", async () => {
+      const journal = makeJournal('jrnl-1', 'Adventure Log', 2);
+      const client = { getJournal: vi.fn(() => journal) } as unknown as FoundryClient;
+
+      const text = getText(await handleGetJournal({ journalId: 'jrnl-1' }, client));
+
+      expect(text).toContain('### Page 1 — ID: jrnl-1-page-0');
+      expect(text).toContain('### Page 2 — ID: jrnl-1-page-1');
+    });
+
     it('falls back to "No pages." when journal has no pages', async () => {
       const journal: MockJournal = { _id: 'jrnl-2', name: 'Empty', pages: [] };
       const client = {
@@ -176,6 +186,48 @@ describe('handleGetJournal', () => {
       expect(text).toContain('...');
       // The 500-char slice should be present but the full 600-char string should not
       expect(text).not.toContain('a'.repeat(600));
+    });
+  });
+
+  describe('raw mode', () => {
+    const html = `<h2>Loot</h2><p>${'b'.repeat(600)}</p><ul><li>Rope</li></ul>`;
+    const journal: MockJournal = {
+      _id: 'jrnl-4',
+      name: 'Raw',
+      pages: [{ _id: 'p-1', name: 'Big Page', type: 'text', text: { content: html, format: 1 } }],
+    };
+
+    it('returns the full, unmodified HTML of each page when raw is true', async () => {
+      const client = { getJournal: vi.fn(() => journal) } as unknown as FoundryClient;
+
+      const text = getText(await handleGetJournal({ journalId: 'jrnl-4', raw: true }, client));
+
+      expect(text).toContain('### Big Page — ID: p-1');
+      expect(text).toContain(html);
+    });
+
+    it('keeps the stripped, truncated preview when raw is false', async () => {
+      const client = { getJournal: vi.fn(() => journal) } as unknown as FoundryClient;
+
+      const text = getText(await handleGetJournal({ journalId: 'jrnl-4', raw: false }, client));
+
+      expect(text).not.toContain('<h2>');
+      expect(text).not.toContain('b'.repeat(600));
+      expect(text).toContain('...');
+    });
+
+    it('returns an empty body for a page without text content', async () => {
+      const imageJournal: MockJournal = {
+        _id: 'jrnl-5',
+        name: 'Maps',
+        pages: [{ _id: 'p-1', name: 'Map', type: 'image' }],
+      };
+      const client = { getJournal: vi.fn(() => imageJournal) } as unknown as FoundryClient;
+
+      const text = getText(await handleGetJournal({ journalId: 'jrnl-5', raw: true }, client));
+
+      expect(text).toContain('### Map — ID: p-1');
+      expect(text).not.toContain('undefined');
     });
   });
 });
